@@ -1,0 +1,177 @@
+#ensure data is processed in chunks even if one item was sent
+data_list=incoming if isintance(incoming, list) else [incoming]
+resp_headers=entry.get('headers', {})
+context=fingerprinter.identify(resp_headers)
+clean_entry['context']=context
+current_context=context
+experience_buffer.append(clean_entry)
+
+#feature engineering
+tfidf=TfidfVectorizer(analyzer='char', ngram_range=(2,4))
+df=pd.DataFrame(data_list)
+payload_vectors=tfidf.fit_transform(df['payload'].fillna(''))
+waf_scores==df['waf_reaction_code'].astype(float).values.reshape(-1,1)
+latencies=np.log1p(df['latency_ms'].astype(float)).values.reshape(-1,1)
+X=np.hstack((payload_vectors.toarray(), waf_scores, latencies))
+
+#Labels
+y=[]
+for _, row in df.iterrows():
+    score=0.0
+    if row['status_code'] in [200, 500]: score = 0.8
+
+#Training
+clf=RandomForestClassifier(n_estimators=100)
+clf.fit(X, y)
+
+#Savings
+if not os.path.exists(path): os.makedirs(path)
+
+
+encodings=["none"]
+
+#identify the waf
+header_str=str(headers_obj).lower()
+
+sorted_buffer=sorted(buffer, key=score_entry, reverse=True)
+
+
+#Feature engineering
+tfidf=TfidfVectorizer(analyzer='char', ngram_range=(2, 4))
+df=pd.DataFrame(data_list)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Structure of the payload are all contained in -d the JSON inside the -d flag becomes
+#the request.json on the server side. How data flows ? When the AI receives the curl
+#request it follows this path : incoming json (raw text from -d flag) and Flask converts
+#that text into a python dictionary and pandas converts that dictionary into a structured
+#table (rows and columns). 
+#payload
+#status_code
+#latency_ms
+#headers
+
+#in the function to train i take the data and put in a dataframe the data is a request.json
+
+#feature engineering 
+tfidf=TfidfVectorizer(analyzer='char', ngram_range=(2, 4))
+df=pd.DataFrame(data)
+tfidf.fit_transform(df['payload']).fillna('')
+
+waf_scores==df['waf_reaction_code'].astype(float).values.reshape(-1,1)
+latencies=np.log1p(df['latency_ms'].astype(float)).values.reshape(-1,1)
+X=np.hstack((payload_vectors.toarray(), waf_scores, latencies))
+
+#labels
+
+#savings
+
+
+
+
+
+
+
+
+
+#in analyze route
+@app.route('/analyze', methods=['POST'])
+def handle_training():
+    global experience_buffer, model
+    data=request.json
+
+    for entry in data:
+        context=entry.get('waf_type', 'generic')
+        entry['context']=context 
+        experience_buffer.append(entry)
+        
+
+
+
+
+def train_agent(data_list):
+    df=pd.DataFrame(data_list)
+    #feature engineering
+    tfidf=TfidfVectorizer('', ngram=(2, 4))
+    tfidf.fit_transform(df['payload'])
+    latency=np1.plog(df['latency_ms'])
+    feature_names = tfidf.get_feature_names_out().tolist()
+    all_feature_names = feature_names + ["WAF_CODE", "LOG_LATENCY"]
+    X=np.hstack(payload_vectors.toarray(), waf_scores, latencies)
+    #labels
+
+    clf=RandomForestClassifier(n_estimators=100)
+    clf.fit(X, y)
+    #save
+    path=f"models/{context_name}/"
+    if not os.path.exist(path): os.makedirs(path)
+    joblib.dump(clf, f"{path}model.pkl")
+    joblib.dump(tfidf, f"{path}tfidf.pkl")
+    with open(f"{path}history.json", 'w') as f:
+        json.dump(data_list, f)
+@app.route('/analyze', methods=['POST'])
+def handle_training():
+    data=request.json 
+    context=data[4] 
+    model=train_model(data, context)
+    joblib.dump(clf, ) 
+@app.route('/generate_attack', methods=['GET'])
+def generate_attack(data):
+    context=data[4]
+    context_path=f"models/{context}/history.json"
+    if os.path.exists(context_path):
+        with open(context_path, 'r') as f:
+            local_buffer=json.load(f)
+        parents=get_top_parents(local_buffer)
+    else:
+        parents = ["../etc/passwd"]
+    target_path="etc/passwd"
+    if model is None:
+        return jsonify({"payload"})
+        
+
+@app.route('analyze_response', methods=['POST'])
+def 
+"""
+The analyze route just needs to train model based on the data calls the function to train 
+the model and apply to it the python dictionary containing the data and the json 
+.pk1 is a pickle file and a way of freezing a complex python object into a flat file on
+your hard drive. It saves math weights and decision trees. 
+joblib is python lib to handle large data objects and ml models efficiently. While python
+has a built in pickle module joblib is better at handling models with large arrays. 
+The ai spend a lot of time learning from file like rubyrails.txt and backstage.txt 
+Without a joblib that intelligence would vanish when the terminal is lcosed. 
+joblib.dump() is to perform serialization, it takes a python object and converts it into a
+binary stream of bytes. It saves those bytes into a .pkl file
+tfidf helps the brain to understand the text you need to load both 
+For generate_attack we take the context from the request we build the path to store history
+json we select random path to suggest the ai. The ai predicts probabilities. 
+Does the model even know about success yet ? 
+
+"""
+
+
