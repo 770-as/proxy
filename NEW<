@@ -1,0 +1,36 @@
+#ensure data is processed in chunks even if one item was sent
+data_list=incoming if isintance(incoming, list) else [incoming]
+resp_headers=entry.get('headers', {})
+context=fingerprinter.identify(resp_headers)
+clean_entry['context']=context
+current_context=context
+experience_buffer.append(clean_entry)
+
+#feture engineering
+tfidf=TfidfVectorizer(analyzer='char', ngram_range=(2,4))
+df=pd.DataFrame(data_list)
+payload_vectors=tfidf.fit_transform(df['payload'].fillna(''))
+waf_scores==df['waf_reaction_code'].astype(float).values.reshape(-1,1)
+latencies=np.log1p(df['latency_ms'].astype(float)).values.reshape(-1,1)
+X=np.hstack((payload_vectors.toarray(), waf_scores, latencies))
+
+#Labels
+y=[]
+for _, row in df.iterrows():
+    score=0.0
+    if row['status_code'] in [200, 500]: score = 0.8
+
+#Training
+clf=RandomForestClassifier(n_estimators=100)
+clf.fit(X, y)
+
+#Savings
+if not os.path.exists(path): os.makedirs(path)
+
+
+encodings=["none"]
+
+#identify the waf
+header_str=str(headers_obj).lower()
+
+sorted_buffer=sorted(buffer, key=score_entry, reverse=True)
