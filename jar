@@ -1,0 +1,183 @@
+package burp;
+
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class HttpListener implements IHttpListener {
+    // 1. Thread-Safe Buffer to collect results
+    private static final List<String> jsonBuffer = Collections.synchronizedList(new ArrayList<>());
+    private static final int CHUNK_SIZE = 20; 
+
+    private final IBurpExtenderCallbacks callbacks;
+    private final IExtensionHelpers helpers;
+
+    public HttpListener(IBurpExtenderCallbacks callbacks) {
+        this.callbacks = callbacks;
+        this.helpers = callbacks.getHelpers();
+    }
+
+    @Override
+    public void processHttpMessage(int toolFlag, boolean messageIsRequest, IHttpRequestResponse messageInfo) {
+        // --- PHASE 1: THE REQUEST ---
+        callbacks.printOutput("Checking message from tool: " + toolFlag);
+        if (toolFlag != IBurpExtenderCallbacks.TOOL_PROXY && toolFlag != IBurpExtenderCallbacks.TOOL_INTRUDER) {
+            return;
+        }
+        if (messageIsRequest) {
+            // Timestamp the request so we can calculate latency in Phase 2
+            long startTime = System.currentTimeMillis();
+            messageInfo.setComment("START_TIME:" + startTime);
+            return; 
+        }
+
+        // --- PHASE 2: THE RESPONSE ---
+        long endTime = System.currentTimeMillis();
+        long latency = -1;
+        String wafReactionCode = "0";
+        String intruderError = "NONE";
+        String serverHeader = "Unknown";
+        int statusCode = -1;
+        
+// Default values
+        int contentLength = 0;
+        String protocol = "HTTP/1.1";
+        int tableLength = messageInfo.getResponse().length - respInfo.getBodyOffset();
+ 
+         // 1. Calculate Latency
+        String previousComment = messageInfo.getComment();
+        if (previousComment != null && previousComment.startsWith("START_TIME:")) {
+            try {
+                long startTime = Long.parseLong(previousComment.replace("START_TIME:", ""));
+                latency = endTime - startTime;
+            } catch (Exception e) { latency = -1; }
+        }
+
+        // 2. Analyze Response
+        byte[] responseBytes = messageInfo.getResponse();
+        if (responseBytes == null) {
+            intruderError = "TCP_RESET_OR_TIMEOUT";
+            statusCode = -1;
+        } else {
+            IResponseInfo responseInfo = helpers.analyzeResponse(responseBytes);
+            statusCode = responseInfo.getStatusCode();
+            
+        // 1. Extract Protocol (The first header is usually "HTTP/1.1 200 OK")
+            // 1. Get all headers once
+            List<String> headers = responseInfo.getHeaders();
+
+            if (!headers.isEmpty()) {
+        // 2. The first header is ALWAYS the status line (Protocol + Status)
+                protocol = headers.get(0).split(" ")[0]; 
+
+    // 3. Loop through the rest of the headers ONCE
+                for (String header : headers) {
+                    String lowerHeader = header.toLowerCase();
+                
+                    if (lowerHeader.startsWith("content-length:")) {
+                        try {
+                            contentLength = Integer.parseInt(header.split(":")[1].trim());
+                        } catch (Exception e) { contentLength = 0; }
+                    } 
+                    else if (lowerHeader.startsWith("server:")) {
+                        serverHeader = header.split(":")[1].trim();
+                    }
+                }
+            }
+
+            if (previousComment != null) {
+                Pattern p = Pattern.compile("\\b(\\d{3})\\b");
+                Matcher m = p.matcher(previousComment);
+                if (m.find()) {
+                    wafReactionCode = m.group(1);
+                }
+            }
+        }
+        callbacks.printOutput("Processing Response for URL: " + helpers.analyzeRequest(messageInfo).getUrl());
+        // 3. Extract Request details
+        IRequestInfo requestInfo = helpers.analyzeRequest(messageInfo);
+        String host = messageInfo.getHttpService().getHost();
+        String url = requestInfo.getUrl().toString();
+         
+        byte[] requestBytes = messageInfo.getRequest();
+        String body = "";
+        if (requestBytes != null) {
+            int bodyOffset = requestInfo.getBodyOffset();
+            body = new String(requestBytes, bodyOffset, requestBytes.length - bodyOffset);
+            // Escape quotes in body to prevent JSON breaking
+            body = body.replace("\"", "\\\""); 
+        }
+
+        // 4. Build the JSON for this specific interaction
+        // Inside processHttpMessage
+        if (!messageIsRequest) {
+            IResponseInfo respInfo = helpers.analyzeResponse(messageInfo.getResponse());
+    
+    // 1. TABLE COLUMN: "Status"
+    
+
+    // 2. TABLE COLUMN: "Length" 
+    // (This matches the 'Length' column in the Intruder UI)
+ 
+    // 3. TABLE COLUMN: "WAF" (Calculated from headers or body)
+    int tableWaf = 0;
+    for (String h : respInfo.getHeaders()) {
+        if (h.contains("X-WAF-Event")) { // Example if Socrata sends a WAF header
+            tableWaf = Integer.parseInt(h.split(":")[1].trim());
+        }
+    }
+    
+    // If no header, use your regex logic on the Comment
+    if (tableWaf == 0 && messageInfo.getComment() != null) {
+        // ... (Your existing Regex code here) ...
+    }
+
+    // 4. Pass these 'Table' values to your Builder
+    String singleJson = JsonBuilder.buildSmartJson(
+        url, tableStatus, String.valueOf(tableWaf), latency, intruderError, 
+        host, serverHeader, body, protocol, tableLength
+    );
+}     
+// 3. Pass to the new Builder
+        String singleJson = JsonBuilder.buildSmartJson(
+            url, statusCode, wafReactionCode, latency, intruderError, 
+            host, serverHeader, body, protocol, contentLength
+        );
+
+        // 5. Add to Buffer
+        jsonBuffer.add(singleJson);
+        callbacks.printOutput("Buffer size increased to: " + jsonBuffer.size());
+        // 6. Check if we send the batch
+        if (jsonBuffer.size() >= CHUNK_SIZE) {
+            sendChunkToAI();
+        }
+    }
+
+    private void sendChunkToAI() {
+        new Thread(() -> {
+            List<String> toSend;
+            synchronized(jsonBuffer) {
+                if (jsonBuffer.size() < CHUNK_SIZE) return; 
+                toSend = new ArrayList<>(jsonBuffer);
+                jsonBuffer.clear();
+            }
+
+            // FIX: Generate the string FIRST, then print it
+            String finalPayload = "[" + String.join(",", toSend) + "]";
+            
+            // Log to Burp Console for you to see
+            callbacks.printOutput("[DEBUG] Sending JSON Chunk to AI: " + finalPayload);
+            
+            // Send the entire batch to Python
+            try {
+                ApiClient.send(finalPayload);
+                callbacks.printOutput("[*] AI Agent: Success. Batch of " + CHUNK_SIZE + " processed.");
+            } catch (Exception e) {
+                callbacks.printError("[!] AI Agent Error: " + e.getMessage());
+            }
+        }).start();
+    }
+}
